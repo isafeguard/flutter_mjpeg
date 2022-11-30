@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dio/adapter.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:http/http.dart';
@@ -45,8 +47,7 @@ class Mjpeg extends HookWidget {
   final Duration timeout;
   final WidgetBuilder? loading;
   final Client? httpClient;
-  final Widget Function(BuildContext contet, dynamic error, dynamic stack)?
-      error;
+  final Widget Function(BuildContext contet, dynamic error, dynamic stack)? error;
   final Map<String, String> headers;
   final MjpegPreprocessor? preprocessor;
 
@@ -109,12 +110,7 @@ class Mjpeg extends HookWidget {
     }
 
     if (image.value == null) {
-      return SizedBox(
-          width: width,
-          height: height,
-          child: loading == null
-              ? Center(child: CircularProgressIndicator())
-              : loading!(context));
+      return SizedBox(width: width, height: height, child: loading == null ? Center(child: CircularProgressIndicator()) : loading!(context));
     }
 
     return VisibilityDetector(
@@ -149,8 +145,7 @@ class _StreamManager {
   // ignore: cancel_subscriptions
   StreamSubscription? _subscription;
 
-  _StreamManager(
-      this.stream, this.isLive, this.headers, this._timeout, this._httpClient, this._preprocessor);
+  _StreamManager(this.stream, this.isLive, this.headers, this._timeout, this._httpClient, this._preprocessor);
 
   Future<void> dispose() async {
     if (_subscription != null) {
@@ -160,8 +155,7 @@ class _StreamManager {
     _httpClient.close();
   }
 
-  void _sendImage(BuildContext context, ValueNotifier<MemoryImage?> image,
-      ValueNotifier<dynamic> errorState, List<int> chunks) async {
+  void _sendImage(BuildContext context, ValueNotifier<MemoryImage?> image, ValueNotifier<dynamic> errorState, List<int> chunks) async {
     // pass image through preprocessor sending to [Image] for rendering
     final List<int>? imageData = _preprocessor.process(chunks);
     if (imageData == null) return;
@@ -171,17 +165,22 @@ class _StreamManager {
     image.value = imageMemory;
   }
 
-  void updateStream(BuildContext context, ValueNotifier<MemoryImage?> image,
-      ValueNotifier<List<dynamic>?> errorState) async {
+  void updateStream(BuildContext context, ValueNotifier<MemoryImage?> image, ValueNotifier<List<dynamic>?> errorState) async {
     try {
-      final request = Request("GET", Uri.parse(stream));
-      request.headers.addAll(headers);
-      final response = await _httpClient.send(request).timeout(
-          _timeout); //timeout is to prevent process to hang forever in some case
+      Dio dioSelfSigned = Dio();
+      (dioSelfSigned.httpClientAdapter as DefaultHttpClientAdapter).onHttpClientCreate = (HttpClient client) {
+        client.badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+        return client;
+      };
+      final response = await dioSelfSigned.get<ResponseBody>(stream, options: Options(responseType: ResponseType.stream));
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
+      // final request = Request("GET", Uri.parse(stream));
+      // request.headers.addAll(headers);
+      // final response = await _httpClient.send(request).timeout(_timeout); //timeout is to prevent process to hang forever in some case
+
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
         var _carry = <int>[];
-        _subscription = response.stream.listen((chunk) async {
+        _subscription = response.data!.stream.listen((chunk) async {
           if (_carry.isNotEmpty && _carry.last == _trigger) {
             if (chunk.first == _eoi) {
               _carry.add(chunk.first);
@@ -224,18 +223,13 @@ class _StreamManager {
           dispose();
         }, cancelOnError: true);
       } else {
-        errorState.value = [
-          HttpException('Stream returned ${response.statusCode} status'),
-          StackTrace.current
-        ];
+        errorState.value = [HttpException('Stream returned ${response.statusCode} status'), StackTrace.current];
         image.value = null;
         dispose();
       }
     } catch (error, stack) {
       // we ignore those errors in case play/pause is triggers
-      if (!error
-          .toString()
-          .contains('Connection closed before full header was received')) {
+      if (!error.toString().contains('Connection closed before full header was received')) {
         errorState.value = [error, stack];
         image.value = null;
       }
